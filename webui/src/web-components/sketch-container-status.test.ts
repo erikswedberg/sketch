@@ -29,6 +29,7 @@ const mockCompleteState: State = {
   first_message_index: 0,
   diff_lines_added: 15,
   diff_lines_removed: 3,
+  plan_mode: false,
 };
 
 test("render props", async ({ mount }) => {

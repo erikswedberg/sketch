@@ -52,6 +52,7 @@ export const sampleContainerState: State = {
   ssh_connection_string: "ssh user@example.com",
   diff_lines_added: 245,
   diff_lines_removed: 67,
+  plan_mode: false,
 };
 
 export const lightUsageState: State = {

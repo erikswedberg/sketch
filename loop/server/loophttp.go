@@ -175,6 +175,7 @@ type State struct {
 	SessionEnded         bool                          `json:"session_ended,omitempty"`
 	CanSendMessages      bool                          `json:"can_send_messages,omitempty"`
 	EndedAt              time.Time                     `json:"ended_at,omitempty"`
+	PlanMode             bool                          `json:"plan_mode"`
 }
 
 // Port represents an open TCP port
@@ -796,6 +797,28 @@ func New(agent loop.CodingAgent, logFile *os.File) (*Server, error) {
 
 	// Handler for /git/push - handles git push operations
 	s.mux.HandleFunc("/git/push", s.handleGitPush)
+
+	// Handler for /plan-mode - get or set plan mode
+	s.mux.HandleFunc("/plan-mode", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]bool{"plan_mode": agent.PlanMode()})
+		case http.MethodPost:
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				httpError(w, r, "Invalid request body", http.StatusBadRequest)
+				return
+			}
+			agent.SetPlanMode(body.Enabled)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]bool{"plan_mode": agent.PlanMode()})
+		default:
+			httpError(w, r, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
 	// Handler for /cancel - cancels the current inner loop in progress
 	s.mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
@@ -1584,6 +1607,7 @@ func (s *Server) getState() State {
 		OpenPorts:            s.getOpenPorts(),
 		TokenContextWindow:   s.agent.TokenContextWindow(),
 		Model:                s.agent.ModelName(),
+		PlanMode:             s.agent.PlanMode(),
 	}
 }
 

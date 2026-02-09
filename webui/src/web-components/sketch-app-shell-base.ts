@@ -91,6 +91,10 @@ export abstract class SketchAppShellBase extends SketchTailwindElement {
   @state()
   protected _todoPanelVisible: boolean = false;
 
+  // Track plan mode state
+  @state()
+  planMode: boolean = false;
+
   // Store scroll position for the chat view to preserve it when switching tabs
   @state()
   private _chatScrollPosition: number = 0;
@@ -140,6 +144,7 @@ export abstract class SketchAppShellBase extends SketchTailwindElement {
     first_message_index: 0,
     diff_lines_added: 0,
     diff_lines_removed: 0,
+    plan_mode: false,
   };
 
   // Mutation observer to detect when new messages are added
@@ -605,6 +610,7 @@ export abstract class SketchAppShellBase extends SketchTailwindElement {
 
       this.containerState = state;
       this.slug = state.slug || "";
+      this.planMode = state.plan_mode || false;
 
       // Update document title when sketch slug changes
       this.updateDocumentTitle();
@@ -775,6 +781,11 @@ export abstract class SketchAppShellBase extends SketchTailwindElement {
         }
       });
     }
+  }
+
+  async _togglePlanMode() {
+    const newMode = await this.dataManager.setPlanMode(!this.planMode);
+    this.planMode = newMode;
   }
 
   async _sendChat(e: CustomEvent) {
@@ -1073,7 +1084,9 @@ export abstract class SketchAppShellBase extends SketchTailwindElement {
       >
         <sketch-chat-input
           @send-chat="${this._sendChat}"
+          @toggle-plan-mode="${this._togglePlanMode}"
           .isDisconnected=${this.connectionStatus === "disconnected"}
+          .planMode=${this.planMode}
         ></sketch-chat-input>
       </div>
     `;

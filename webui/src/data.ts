@@ -534,6 +534,32 @@ export class DataManager {
   }
 
   /**
+   * Get plan mode state
+   */
+  public getPlanMode(): boolean {
+    return this.timelineState?.plan_mode ?? false;
+  }
+
+  /**
+   * Set plan mode
+   */
+  public async setPlanMode(enabled: boolean): Promise<boolean> {
+    try {
+      const response = await fetch("plan-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!response.ok) return false;
+      const data = await response.json();
+      return data.plan_mode;
+    } catch (error) {
+      console.error("Error setting plan mode:", error);
+      return false;
+    }
+  }
+
+  /**
    * Get a suggested reprompt
    */
   public async getSuggestedReprompt(): Promise<string | null> {

@@ -115,6 +115,7 @@ export interface State {
 	session_ended?: boolean;
 	can_send_messages?: boolean;
 	ended_at?: string;
+	plan_mode: boolean;
 }
 
 export interface TodoItem {

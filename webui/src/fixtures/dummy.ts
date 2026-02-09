@@ -572,6 +572,7 @@ export const initialState: State = {
   agent_state: "WaitingForUserInput",
   diff_lines_added: 42,
   diff_lines_removed: 7,
+  plan_mode: false,
   open_ports: [
     {
       port: 3000,

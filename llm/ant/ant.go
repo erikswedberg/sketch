@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ const (
 	DefaultMaxTokens = 8192
 	APIKeyEnv        = "ANTHROPIC_API_KEY"
 	DefaultURL       = "https://api.anthropic.com/v1/messages"
+	toolPrefix       = "sk_" // prefix for tool names when using OAuth tokens
 )
 
 const (
@@ -84,6 +86,12 @@ type Service struct {
 	Model     string       // defaults to DefaultModel if empty
 	MaxTokens int          // defaults to DefaultMaxTokens if zero
 	DumpLLM   bool         // whether to dump request/response text to files for debugging; defaults to false
+	isProMode bool         // internal flag set when using Claude Pro/Max OAuth tokens
+}
+
+// isClaudeProToken reports whether apiKey is a Claude Pro/Max OAuth token.
+func isClaudeProToken(apiKey string) bool {
+	return strings.HasPrefix(apiKey, "sk-ant-oat")
 }
 
 var _ llm.Service = (*Service)(nil)
@@ -365,6 +373,20 @@ func fromLLMTool(t *llm.Tool) *tool {
 	}
 }
 
+// fromLLMToolWithPrefix converts an llm.Tool to an Anthropic tool, optionally prefixing the name
+func fromLLMToolWithPrefix(t *llm.Tool, prefix string) *tool {
+	name := t.Name
+	if prefix != "" {
+		name = prefix + name
+	}
+	return &tool{
+		Name:        name,
+		Type:        t.Type,
+		Description: t.Description,
+		InputSchema: t.InputSchema,
+	}
+}
+
 func fromLLMSystem(s llm.SystemContent) systemContent {
 	return systemContent{
 		Text:         s.Text,
@@ -374,13 +396,47 @@ func fromLLMSystem(s llm.SystemContent) systemContent {
 }
 
 func (s *Service) fromLLMRequest(r *llm.Request) *request {
+	// Determine model based on mode
+	model := cmp.Or(s.Model, DefaultModel)
+	if s.isProMode {
+		// In Pro mode, support Sonnet or Opus
+		if strings.Contains(model, "opus") {
+			model = Claude45Opus
+		} else {
+			model = Claude45Sonnet
+		}
+	}
+
+	// Build system messages
+	var system []systemContent
+	if s.isProMode {
+		// Prepend Claude Code system prompt for Pro/Max mode
+		system = append(system, systemContent{
+			Text: "You are Claude Code, Anthropic's official CLI for Claude.",
+			Type: "text",
+		})
+	}
+	// Append user's system messages
+	system = append(system, mapped(r.System, fromLLMSystem)...)
+
+	// Convert tools, with prefixing for Pro mode
+	var tools []*tool
+	if s.isProMode {
+		tools = make([]*tool, len(r.Tools))
+		for i, t := range r.Tools {
+			tools[i] = fromLLMToolWithPrefix(t, toolPrefix)
+		}
+	} else {
+		tools = mapped(r.Tools, fromLLMTool)
+	}
+
 	return &request{
-		Model:      cmp.Or(s.Model, DefaultModel),
+		Model:      model,
 		Messages:   mapped(r.Messages, fromLLMMessage),
 		MaxTokens:  cmp.Or(s.MaxTokens, DefaultMaxTokens),
 		ToolChoice: fromLLMToolChoice(r.ToolChoice),
-		Tools:      mapped(r.Tools, fromLLMTool),
-		System:     mapped(r.System, fromLLMSystem),
+		Tools:      tools,
+		System:     system,
 	}
 }
 
@@ -436,8 +492,34 @@ func toLLMResponse(r *response) *llm.Response {
 	}
 }
 
+// unprefixToolNames removes the tool prefix from tool names in response content
+func unprefixToolNames(contents []llm.Content, prefix string) []llm.Content {
+	if prefix == "" {
+		return contents
+	}
+	for i := range contents {
+		if contents[i].ToolName != "" && strings.HasPrefix(contents[i].ToolName, prefix) {
+			contents[i].ToolName = strings.TrimPrefix(contents[i].ToolName, prefix)
+		}
+	}
+	return contents
+}
+
 // Do sends a request to Anthropic.
 func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error) {
+	// Read API key from file if it's a file path, otherwise use as-is
+	apiKey := s.APIKey
+	if _, err := os.Stat(apiKey); err == nil {
+		keyBytes, err := os.ReadFile(apiKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read API key from file %s: %w", apiKey, err)
+		}
+		apiKey = strings.TrimSpace(string(keyBytes))
+	}
+
+	// Detect Claude Pro/Max mode based on API key
+	s.isProMode = isClaudeProToken(apiKey)
+
 	request := s.fromLLMRequest(ir)
 
 	var payload []byte
@@ -474,30 +556,66 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			slog.WarnContext(ctx, "anthropic request sleep before retry", "sleep", sleep, "attempts", attempts)
 			time.Sleep(sleep)
 		}
-		if s.DumpLLM {
-			if err := llm.DumpToFile("request", url, payload); err != nil {
-				slog.WarnContext(ctx, "failed to dump request to file", "error", err)
-			}
-		}
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 		if err != nil {
 			return nil, errors.Join(errs, err)
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-API-Key", s.APIKey)
 		req.Header.Set("Anthropic-Version", "2023-06-01")
 
-		var features []string
-		if request.TokenEfficientToolUse {
-			features = append(features, "token-efficient-tool-use-2025-02-19")
+		// Set authentication header based on mode
+		if s.isProMode {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		} else {
+			req.Header.Set("X-API-Key", apiKey)
 		}
-		if largerMaxTokens {
-			features = append(features, "output-128k-2025-02-19")
-			request.MaxTokens = 128 * 1024
+
+		// Set anthropic-beta header
+		if s.isProMode {
+			// Claude Pro/Max mode requires specific beta features
+			req.Header.Set("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
+		} else {
+			// Normal API key mode - conditionally set beta features
+			var features []string
+			if request.TokenEfficientToolUse {
+				features = append(features, "token-efficient-tool-use-2025-02-19")
+			}
+			if largerMaxTokens {
+				features = append(features, "output-128k-2025-02-19")
+				request.MaxTokens = 128 * 1024
+			}
+			if len(features) > 0 {
+				req.Header.Set("anthropic-beta", strings.Join(features, ","))
+			}
 		}
-		if len(features) > 0 {
-			req.Header.Set("anthropic-beta", strings.Join(features, ","))
+
+		// Dump full request metadata for debugging
+		if s.DumpLLM {
+			var dumpData strings.Builder
+			fmt.Fprintf(&dumpData, "=== REQUEST METADATA ===\n")
+			fmt.Fprintf(&dumpData, "URL: %s\n", url)
+			fmt.Fprintf(&dumpData, "Method: POST\n")
+			fmt.Fprintf(&dumpData, "Headers:\n")
+			for k, v := range req.Header {
+				if k == "Authorization" || k == "X-API-Key" {
+					fmt.Fprintf(&dumpData, "  %s: [REDACTED]\n", k)
+				} else {
+					fmt.Fprintf(&dumpData, "  %s: %s\n", k, strings.Join(v, ", "))
+				}
+			}
+			fmt.Fprintf(&dumpData, "\nPro Mode: %v\n", s.isProMode)
+			fmt.Fprintf(&dumpData, "Model (Service): %s\n", s.Model)
+			fmt.Fprintf(&dumpData, "Model (Request): %s\n", request.Model)
+			fmt.Fprintf(&dumpData, "System Messages: %d\n", len(request.System))
+			if len(request.System) > 0 {
+				fmt.Fprintf(&dumpData, "First System Message: %s\n", request.System[0].Text)
+			}
+			fmt.Fprintf(&dumpData, "\n=== REQUEST PAYLOAD ===\n")
+			dumpData.Write(payload)
+			if err := llm.DumpToFile("request", url, []byte(dumpData.String())); err != nil {
+				slog.WarnContext(ctx, "failed to dump request to file", "error", err)
+			}
 		}
 
 		resp, err := httpc.Do(req)
@@ -543,19 +661,33 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			}
 			response.Usage.CostUSD = llm.CostUSDFromResponse(resp.Header)
 
-			return toLLMResponse(&response), nil
+			llmResp := toLLMResponse(&response)
+			// Unprefix tool names if in Pro mode
+			if s.isProMode {
+				llmResp.Content = unprefixToolNames(llmResp.Content, toolPrefix)
+			}
+			return llmResp, nil
 		case resp.StatusCode >= 500 && resp.StatusCode < 600:
 			// server error, retry
 			slog.WarnContext(ctx, "anthropic_request_failed", "response", string(buf), "status_code", resp.StatusCode)
 			errs = errors.Join(errs, fmt.Errorf("status %v: %s", resp.Status, buf))
 			continue
 		case resp.StatusCode == 429:
-			// rate limited, retry
-			slog.WarnContext(ctx, "anthropic_request_rate_limited", "response", string(buf))
+			// rate limited - check if it's quota exhaustion or temporary throttling
+			if attempts >= 2 {
+				// After 2 retries, give up - likely quota exhaustion, not temporary rate limit
+				slog.WarnContext(ctx, "anthropic_request_rate_limited_giving_up", "response", string(buf), "attempts", attempts)
+				return nil, errors.Join(errs, fmt.Errorf("rate limited after %d attempts: %s", attempts, buf))
+			}
+			slog.WarnContext(ctx, "anthropic_request_rate_limited", "response", string(buf), "attempts", attempts)
 			errs = errors.Join(errs, fmt.Errorf("status %v: %s", resp.Status, buf))
 			continue
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
-			// some other 400, probably unrecoverable
+			// Client error - likely unrecoverable (bad request, auth, not found, etc.)
+			if resp.StatusCode == 401 {
+				slog.WarnContext(ctx, "anthropic_request_unauthorized", "response", string(buf))
+				return nil, fmt.Errorf("unauthorized (expired or invalid token): %s", buf)
+			}
 			slog.WarnContext(ctx, "anthropic_request_failed", "response", string(buf), "status_code", resp.StatusCode)
 			return nil, errors.Join(errs, fmt.Errorf("status %v: %s", resp.Status, buf))
 		default:

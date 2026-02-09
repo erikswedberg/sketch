@@ -19,6 +19,9 @@ export class SketchChatInput extends SketchTailwindElement {
   @property()
   isDisconnected: boolean = false;
 
+  @property({ type: Boolean })
+  planMode: boolean = false;
+
   constructor() {
     super();
     this._handleDiffComment = this._handleDiffComment.bind(this);
@@ -259,6 +262,15 @@ export class SketchChatInput extends SketchTailwindElement {
     requestAnimationFrame(() => this.adjustChatSpacing());
   }
 
+  _togglePlanMode() {
+    this.dispatchEvent(
+      new CustomEvent("toggle-plan-mode", {
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   _chatInputKeyDown(event: KeyboardEvent) {
     // Send message if Enter is pressed without Shift key
     if (event.key === "Enter" && !event.shiftKey) {
@@ -340,6 +352,10 @@ export class SketchChatInput extends SketchTailwindElement {
                 ? "Uploading..."
                 : "Send"}
           </button>
+          <span
+            @click="${this._togglePlanMode}"
+            class="font-mono text-xs text-gray-500 dark:text-neutral-400 cursor-pointer hover:underline hover:text-blue-600 dark:hover:text-blue-400 self-center ml-2 select-none"
+          >${this.planMode ? "[PLAN MODE]" : "[BUILD MODE]"}</span>
         </div>
         ${this.isDraggingOver
           ? html`

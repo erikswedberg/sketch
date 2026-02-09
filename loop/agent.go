@@ -171,6 +171,11 @@ type CodingAgent interface {
 
 	// ExternalMessage enqueues an external message to the agent and returns immediately.
 	ExternalMessage(ctx context.Context, msg ExternalMessage) error
+
+	// PlanMode returns whether plan mode is enabled.
+	PlanMode() bool
+	// SetPlanMode enables or disables plan mode.
+	SetPlanMode(enabled bool)
 }
 
 type CodingAgentMessageType string
@@ -484,6 +489,56 @@ type Agent struct {
 
 	// Track outstanding tool calls by ID with their names
 	outstandingToolCalls map[string]string
+
+	// planMode when true restricts to read-only tools
+	planMode bool
+	// allTools stores the complete tool list for restoring after plan mode
+	allTools []*llm.Tool
+}
+
+// planModeBlockedTools are tools disabled in plan mode
+var planModeBlockedTools = map[string]bool{
+	"patch":      true,
+	"done":       true,
+	"codereview": true,
+}
+
+// PlanMode returns whether plan mode is enabled.
+func (a *Agent) PlanMode() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.planMode
+}
+
+// SetPlanMode enables or disables plan mode and updates available tools.
+func (a *Agent) SetPlanMode(enabled bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.planMode = enabled
+
+	convo, ok := a.convo.(*conversation.Convo)
+	if !ok {
+		return
+	}
+
+	// Store full tool list on first call
+	if a.allTools == nil {
+		a.allTools = convo.Tools
+	}
+
+	if enabled {
+		// Filter to read-only tools
+		var filtered []*llm.Tool
+		for _, t := range a.allTools {
+			if !planModeBlockedTools[t.Name] {
+				filtered = append(filtered, t)
+			}
+		}
+		convo.Tools = filtered
+	} else {
+		// Restore all tools
+		convo.Tools = a.allTools
+	}
 }
 
 // ExternalMessage implements CodingAgent.
@@ -1829,6 +1884,11 @@ func (a *Agent) processUserMessage(ctx context.Context) (*llm.Response, error) {
 			Type:    SlugMessageType,
 			Content: a.Slug(),
 		})
+	}
+
+	// Append plan mode indicator if enabled
+	if a.PlanMode() {
+		msgs = append(msgs, llm.StringContent("\n[PLAN MODE]"))
 	}
 
 	userMessage := llm.Message{
