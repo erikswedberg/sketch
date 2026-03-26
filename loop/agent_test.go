@@ -45,6 +45,7 @@ func TestAgentLoop(t *testing.T) {
 		rr.ScrubReq(func(req *http.Request) error {
 			req.Header.Del("x-api-key")
 			req.Header.Del("anthropic-api-key")
+			req.Header.Del("Anthropic-Beta") // beta features change over time
 			return nil
 		})
 		client = rr.Client()
