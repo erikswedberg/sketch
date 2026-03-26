@@ -36,6 +36,7 @@ const (
 	Claude4Sonnet  = "claude-sonnet-4-20250514"
 	Claude45Sonnet = "claude-sonnet-4-5-20250929"
 	Claude45Opus   = "claude-opus-4-5-20251101"
+	Claude46Opus   = "claude-opus-4-6"
 )
 
 // IsClaudeModel reports whether userName is a user-friendly Claude model.
@@ -51,9 +52,19 @@ func ClaudeModelName(userName string) string {
 	case "claude", "sonnet":
 		return Claude45Sonnet
 	case "opus":
-		return Claude45Opus
+		return Claude46Opus
 	default:
 		return ""
+	}
+}
+
+// supports1MContext reports whether the model supports 1M token context window.
+func supports1MContext(model string) bool {
+	switch model {
+	case Claude45Sonnet, Claude45Opus, Claude46Opus:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -64,12 +75,16 @@ func (s *Service) TokenContextWindow() int {
 		model = DefaultModel
 	}
 
+	if supports1MContext(model) {
+		return 1000000
+	}
+
 	switch model {
 	case Claude35Sonnet, Claude37Sonnet:
 		return 200000
 	case Claude35Haiku:
 		return 200000
-	case Claude4Sonnet, Claude45Sonnet, Claude45Opus:
+	case Claude4Sonnet:
 		return 200000
 	default:
 		// Default for unknown models
