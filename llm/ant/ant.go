@@ -36,7 +36,7 @@ const (
 	Claude4Sonnet  = "claude-sonnet-4-20250514"
 	Claude45Sonnet = "claude-sonnet-4-5-20250929"
 	Claude45Opus   = "claude-opus-4-5-20251101"
-	Claude46Opus   = "claude-opus-4-6-20260310"
+	Claude46Opus   = "claude-opus-4-6"
 )
 
 // IsClaudeModel reports whether userName is a user-friendly Claude model.
@@ -59,7 +59,6 @@ func ClaudeModelName(userName string) string {
 }
 
 // supports1MContext reports whether the model supports 1M token context window.
-// This requires the anthropic-beta header "context-1m-2025-08-07" to be set.
 func supports1MContext(model string) bool {
 	switch model {
 	case Claude45Sonnet, Claude45Opus, Claude46Opus:
@@ -590,17 +589,10 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		// Set anthropic-beta header
 		if s.isProMode {
 			// Claude Pro/Max mode requires specific beta features
-			proFeatures := "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
-			if supports1MContext(request.Model) {
-				proFeatures += ",context-1m-2025-08-07"
-			}
-			req.Header.Set("anthropic-beta", proFeatures)
+			req.Header.Set("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
 		} else {
 			// Normal API key mode - conditionally set beta features
 			var features []string
-			if supports1MContext(request.Model) {
-				features = append(features, "context-1m-2025-08-07")
-			}
 			if request.TokenEfficientToolUse {
 				features = append(features, "token-efficient-tool-use-2025-02-19")
 			}
